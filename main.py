@@ -25,7 +25,7 @@ DIRECTIONS = {
 class Window:
     def __init__(self, root):
         self.root = root
-        root.title("深海邮差  /  Deep Sea Post")
+        root.title(" 深海 /  Deep Sea")
         root.configure(bg=BG)
         root.resizable(False, False)
         self.canvas = tk.Canvas(root, width=1000, height=664, bg=BG, highlightthickness=0)
