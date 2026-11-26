@@ -3,7 +3,7 @@
 import tkinter as tk
 from tkinter import font
 
-from game import DIVES, Game
+from game import DIVES, ENDLESS_SECONDS, EndlessGame, Game
 
 
 BG = "#071722"
@@ -37,16 +37,37 @@ class Window:
             "TkDefaultFont",
         )
         self.best = {}
+        self.endless_best = 0
         self.buttons = []
         self.fog = False
+        self.game: Game
         self.load(0)
         root.bind("<KeyPress>", self.key)
         self.canvas.bind("<Button-1>", self.click)
+        root.after(100, self.tick)
 
     def load(self, index):
         self.game = Game(index)
         self.message = self.game.dive.hint
         self.draw()
+
+    def load_endless(self):
+        if not isinstance(self.game, EndlessGame):
+            self.game = EndlessGame()
+            self.message = self.game.dive.hint
+            self.draw()
+
+    def restart(self):
+        self.game.reset()
+        self.message = self.game.dive.hint
+        self.draw()
+
+    def tick(self):
+        if isinstance(self.game, EndlessGame) and self.game.state.outcome == "playing":
+            self.game.expire()
+            if self.game.seconds_left != self.shown_seconds or self.game.state.outcome == "timeout":
+                self.draw()
+        self.root.after(100, self.tick)
 
     def key(self, event):
         key = event.keysym if event.keysym in DIRECTIONS else event.keysym.lower()
@@ -55,9 +76,11 @@ class Window:
         elif key in ("z", "backspace"):
             self.undo()
         elif key == "r":
-            self.load(self.game.index)
+            self.restart()
         elif key == "f":
             self.toggle_fog()
+        elif key == "e":
+            self.load_endless()
         elif key in ("1", "2", "3"):
             self.load(int(key) - 1)
         elif key == "return" and self.game.state.outcome == "won":
@@ -74,10 +97,12 @@ class Window:
         if state.outcome == "won":
             best = self.best.get(self.game.index, state.turns)
             self.best[self.game.index] = min(best, state.turns)
+        if isinstance(self.game, EndlessGame):
+            self.endless_best = max(self.endless_best, self.game.score)
         self.draw()
 
     def undo(self):
-        if self.game.undo():
+        if not isinstance(self.game, EndlessGame) and self.game.undo():
             self.message = "已撤销一步，电量与地图状态已恢复。"
             self.draw()
 
@@ -85,8 +110,9 @@ class Window:
         self.load((self.game.index + 1) % len(DIVES))
 
     def toggle_fog(self):
-        self.fog = not self.fog
-        self.draw()
+        if not isinstance(self.game, EndlessGame):
+            self.fog = not self.fog
+            self.draw()
 
     def click(self, event):
         for (x1, y1, x2, y2), action in self.buttons:
@@ -116,18 +142,24 @@ class Window:
         self.buttons.clear()
         state = self.game.state
         dive = self.game.dive
+        endless = isinstance(self.game, EndlessGame)
         self.label(36, 28, "D E E P   S E A   P O S T", 13, MINT, mono=True)
         self.label(34, 65, "深海邮差", 38, TEXT, True)
-        self.label(36, 103, "收齐邮包，赶在电力耗尽前返航。", 15, MUTED)
-        self.label(964, 37, f"航线 {self.game.index + 1:02} / {len(DIVES):02}", 15,
-                   MINT, anchor="e")
-        fog_caption = "F  迷雾：开" if self.fog else "F  迷雾：关"
-        self.button((836, 65, 965, 103), fog_caption, self.toggle_fog, active=self.fog)
+        if endless:
+            self.label(36, 103, f"在 {ENDLESS_SECONDS} 秒内尽可能多地回收邮包。", 15, MUTED)
+            self.label(964, 37, "限时挑战", 15, GOLD, anchor="e")
+            self.label(964, 84, "迷雾常驻", 14, MUTED, anchor="e")
+        else:
+            self.label(36, 103, "收齐邮包，赶在电力耗尽前返航。", 15, MUTED)
+            self.label(964, 37, f"航线 {self.game.index + 1:02} / {len(DIVES):02}", 15,
+                       MINT, anchor="e")
+            fog_caption = "F  迷雾：开" if self.fog else "F  迷雾：关"
+            self.button((836, 65, 965, 103), fog_caption, self.toggle_fog, active=self.fog)
         self.canvas.create_line(35, 126, 965, 126, fill=EDGE)
 
         self.box(35, 149, 555, 607, PANEL, EDGE)
         self.label(53, 173, dive.name, 17, TEXT, True)
-        chart_label = "视野：相邻四格" if self.fog else "航  行  图"
+        chart_label = "视野：相邻四格" if endless or self.fog else "航  行  图"
         self.label(538, 173, chart_label, 12, MUTED, anchor="e")
         for y, row in enumerate(dive.chart):
             for x, value in enumerate(row):
@@ -145,12 +177,35 @@ class Window:
             self.box(left, 234, left + bar_width - 3, 244,
                      battery_color if segment < state.battery else "#23404A")
 
+        if isinstance(self.game, EndlessGame):
+            self.draw_endless_stats(self.game)
+        else:
+            self.draw_route_stats()
+
+        self.notice()
+        if not endless:
+            self.button((598, 552, 700, 586), "Z  撤销", self.undo)
+        self.button((711, 552, 813, 586), "R  重来", self.restart)
+        if state.outcome == "won":
+            caption = "下一航线 →" if self.game.index < len(DIVES) - 1 else "返回首关 →"
+            self.button((824, 552, 945, 586), caption, self.advance, active=True)
+
+        for i in range(len(DIVES)):
+            x = 35 + i * 74
+            suffix = " ✓" if i in self.best else ""
+            self.button((x, 622, x + 63, 649), f"{i + 1:02}{suffix}",
+                        lambda index=i: self.load(index), active=not endless and self.game.index == i)
+        self.button((261, 622, 393, 649), "E  迷雾无尽", self.load_endless, active=endless)
+        self.label(965, 636, "方向键 / WASD  移动", 14, MUTED, anchor="e")
+
+    def draw_route_stats(self):
+        state = self.game.state
         self.label(598, 272, "已回收邮包", 14, MUTED)
         collected = self.game.total_packets - len(state.packets)
         self.label(945, 272, f"{collected} / {self.game.total_packets}", 17, GOLD,
                    True, "e", True)
         self.label(598, 302, "航行步数", 14, MUTED)
-        self.label(945, 302, f"{state.turns:02} / {dive.par:02}", 17, TEXT,
+        self.label(945, 302, f"{state.turns:02} / {self.game.dive.par:02}", 17, TEXT,
                    True, "e", True)
         self.label(598, 328, "步数参照为当前航线的最短可行路线。", 12, MUTED)
         self.canvas.create_line(598, 349, 945, 349, fill=EDGE)
@@ -163,27 +218,31 @@ class Window:
             self.symbol(x, y, icon, ready=True)
             self.label(x + 20, y, caption, 13, MUTED)
 
-        self.notice()
-        self.button((598, 552, 700, 586), "Z  撤销", self.undo)
-        self.button((711, 552, 813, 586), "R  重来", lambda: self.load(self.game.index))
-        if state.outcome == "won":
-            caption = "下一航线 →" if self.game.index < len(DIVES) - 1 else "返回首关 →"
-            self.button((824, 552, 945, 586), caption, self.advance, active=True)
-
-        for i in range(len(DIVES)):
-            x = 35 + i * 74
-            suffix = " ✓" if i in self.best else ""
-            self.button((x, 622, x + 63, 649), f"{i + 1:02}{suffix}",
-                        lambda index=i: self.load(index), active=self.game.index == i)
-        self.label(273, 636, "点击编号选关", 13, MUTED)
-        self.label(965, 636, "方向键 / WASD  移动", 14, MUTED, anchor="e")
+    def draw_endless_stats(self, game):
+        self.shown_seconds = game.seconds_left
+        self.label(598, 272, "剩余时间", 14, MUTED)
+        clock = f"{self.shown_seconds // 60:02}:{self.shown_seconds % 60:02}"
+        timer_color = RED if self.shown_seconds <= 10 else MINT
+        self.label(945, 272, clock, 24, timer_color, True, "e", True)
+        self.label(598, 309, "回收邮包", 14, MUTED)
+        self.label(945, 309, f"{game.score:02}", 21, GOLD, True, "e", True)
+        self.label(598, 335, f"本次打开游戏后的最佳成绩：{self.endless_best}", 12, MUTED)
+        self.canvas.create_line(598, 349, 945, 349, fill=EDGE)
+        self.label(598, 373, "挑战规则", 15, TEXT, True)
+        self.symbol(609, 408, "P")
+        self.label(630, 408, "回收一个邮包，立即充电并刷新下一个。", 13, MUTED)
+        self.label(598, 444, "倒计时持续进行，电量耗尽也会结束挑战。", 13, MUTED)
 
     def notice(self):
         state = self.game.state
         color = MINT
         heading = "航行提示"
         message = self.message
-        if state.outcome == "won":
+        if isinstance(self.game, EndlessGame) and state.outcome != "playing":
+            heading = "时间到" if state.outcome == "timeout" else "电量耗尽"
+            color = GOLD if state.outcome == "timeout" else RED
+            message = f"本轮回收 {self.game.score} 封邮包。按 R 再挑战。"
+        elif state.outcome == "won":
             heading = "投递成功"
             message = f"本关最佳 {self.best[self.game.index]} 步。本次已完成 {len(self.best)} / {len(DIVES)} 条航线。"
         elif state.outcome == "lost":
@@ -200,7 +259,7 @@ class Window:
         cx, cy = left + TILE / 2, top + TILE / 2
         point = (x, y)
         px, py = state.position
-        if self.fog and abs(x - px) + abs(y - py) > 1:
+        if (self.fog or isinstance(self.game, EndlessGame)) and abs(x - px) + abs(y - py) > 1:
             self.box(left, top, left + TILE - 1, top + TILE - 1, "#081923", "#102733")
             if point in state.packets:
                 self.symbol(cx, cy, "P")

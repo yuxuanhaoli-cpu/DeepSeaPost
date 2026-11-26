@@ -1,6 +1,10 @@
 """Rules and maps for Deep Sea Post. The model can run without a GUI."""
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, replace
+from math import ceil
+from random import choice
+from time import monotonic
 from typing import NamedTuple
 
 
@@ -48,6 +52,19 @@ DIVES = (
     )),
 )
 
+ENDLESS_SECONDS = 60
+ENDLESS_DIVE = Dive("迷雾无尽", "跟着邮包标记探索。回收后会立即充满电。", 15, 0, (
+    "###########",
+    "#S..#.....#",
+    "#.#.#.##..#",
+    "#.#.......#",
+    "#...###.#.#",
+    "###.....#.#",
+    "#...#.#...#",
+    "#.........#",
+    "###########",
+))
+
 
 @dataclass(frozen=True)
 class State:
@@ -61,12 +78,12 @@ class State:
 
 
 class Game:
-    def __init__(self, index=0):
+    def __init__(self, index=0, *, dive=None):
         self.index = index
-        self.dive = DIVES[index]
+        self.dive = DIVES[index] if dive is None else dive
         self.chart = self.dive.chart
         self.start = next(iter(self.find("S")))
-        self.exit = next(iter(self.find("E")))
+        self.exit = next(iter(self.find("E")), None)
         self.total_packets = len(self.find("P"))
         self.reset()
 
@@ -130,3 +147,61 @@ class Game:
             return False
         self.state = self.history.pop()
         return True
+
+
+class EndlessGame(Game):
+    """Timed score challenge with one reachable packet on the chart at a time."""
+
+    def __init__(self, clock=monotonic):
+        self.clock = clock
+        super().__init__(dive=ENDLESS_DIVE)
+
+    def reset(self):
+        super().reset()
+        self.score = 0
+        self.state = replace(self.state, packets=self.spawn(self.start))
+        self.finished_seconds = None
+        self.deadline = self.clock() + ENDLESS_SECONDS
+
+    @property
+    def seconds_left(self):
+        if self.finished_seconds is not None:
+            return self.finished_seconds
+        return max(0, ceil(self.deadline - self.clock()))
+
+    def expire(self):
+        if self.state.outcome == "playing" and self.seconds_left == 0:
+            self.state = replace(self.state, outcome="timeout")
+
+    def spawn(self, start):
+        # Every step on this chart costs one unit, so BFS gives the energy cost.
+        queue = deque([(start, 0)])
+        seen = {start}
+        candidates = []
+        while queue:
+            (x, y), distance = queue.popleft()
+            if distance >= 5:
+                candidates.append((x, y))
+            if distance == 10:
+                continue
+            for nx, ny in ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)):
+                point = nx, ny
+                if point not in seen and self.chart[ny][nx] != "#":
+                    seen.add(point)
+                    queue.append((point, distance + 1))
+        return frozenset({choice(candidates)})
+
+    def move(self, dx, dy):
+        self.expire()
+        before = self.state
+        message = super().move(dx, dy)
+        self.history.clear()
+        if self.state.packets == before.packets:
+            if self.state.outcome == "lost":
+                self.finished_seconds = self.seconds_left
+            return message
+
+        self.score += 1
+        self.state = replace(self.state, battery=self.dive.battery, outcome="playing",
+                             packets=self.spawn(self.state.position))
+        return "邮包已回收，电量充满，新邮包已出现。"
