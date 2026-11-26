@@ -38,6 +38,7 @@ class Window:
         )
         self.best = {}
         self.buttons = []
+        self.fog = False
         self.load(0)
         root.bind("<KeyPress>", self.key)
         self.canvas.bind("<Button-1>", self.click)
@@ -55,6 +56,8 @@ class Window:
             self.undo()
         elif key == "r":
             self.load(self.game.index)
+        elif key == "f":
+            self.toggle_fog()
         elif key in ("1", "2", "3"):
             self.load(int(key) - 1)
         elif key == "return" and self.game.state.outcome == "won":
@@ -80,6 +83,10 @@ class Window:
 
     def advance(self):
         self.load((self.game.index + 1) % len(DIVES))
+
+    def toggle_fog(self):
+        self.fog = not self.fog
+        self.draw()
 
     def click(self, event):
         for (x1, y1, x2, y2), action in self.buttons:
@@ -114,11 +121,14 @@ class Window:
         self.label(36, 103, "收齐邮包，赶在电力耗尽前返航。", 15, MUTED)
         self.label(964, 37, f"航线 {self.game.index + 1:02} / {len(DIVES):02}", 15,
                    MINT, anchor="e")
+        fog_caption = "F  迷雾：开" if self.fog else "F  迷雾：关"
+        self.button((836, 65, 965, 103), fog_caption, self.toggle_fog, active=self.fog)
         self.canvas.create_line(35, 126, 965, 126, fill=EDGE)
 
         self.box(35, 149, 555, 607, PANEL, EDGE)
         self.label(53, 173, dive.name, 17, TEXT, True)
-        self.label(538, 173, "航  行  图", 12, MUTED, anchor="e")
+        chart_label = "视野：相邻四格" if self.fog else "航  行  图"
+        self.label(538, 173, chart_label, 12, MUTED, anchor="e")
         for y, row in enumerate(dive.chart):
             for x, value in enumerate(row):
                 self.tile(x, y, value)
@@ -188,6 +198,16 @@ class Window:
         state = self.game.state
         left, top = GRID_X + x * TILE, GRID_Y + y * TILE
         cx, cy = left + TILE / 2, top + TILE / 2
+        point = (x, y)
+        px, py = state.position
+        if self.fog and abs(x - px) + abs(y - py) > 1:
+            self.box(left, top, left + TILE - 1, top + TILE - 1, "#081923", "#102733")
+            if point in state.packets:
+                self.symbol(cx, cy, "P")
+            elif point == self.game.exit:
+                self.symbol(cx, cy, "E", ready=not state.packets)
+            return
+
         if value == "#":
             self.box(left, top, left + TILE - 1, top + TILE - 1, "#173440", "#193844")
             self.canvas.create_line(left + 5, top + 16, left + 20, top + 5, fill="#224553")
@@ -197,7 +217,6 @@ class Window:
         if value == "X":
             background = "#102F48"
         self.box(left, top, left + TILE - 1, top + TILE - 1, background, "#14333F")
-        point = (x, y)
         if state.position == point:
             self.symbol(cx, cy, "sub")
         elif point in state.packets:
